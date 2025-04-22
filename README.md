@@ -15,7 +15,7 @@ This tool allows users to:
 
 There are a couple of limitations with the API. Some of the following I've run into:
 1. Can only process date (not date-time)
-2. Names of calculations aren't brought over.
+2. ~~Names of calculations aren't brought over.~~ Fixed this by replacing fieldName with fieldCaption
 3. Some data sources randomly error out (Still troubleshooting)
 
 ## How to make personalize it:
