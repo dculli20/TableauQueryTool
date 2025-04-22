@@ -29,6 +29,7 @@ Search for {enter_your_cluster}. Should be lines 37, 502, 1107, 1175, 1232, 1281
 ### Token lines:
 
 Search for '{enter_your_token' and replace the token name and secret. Should be lines 1178/1179, 2933/2934
+You can create a personal access token (PAT) under your account settings in Tableau. This is where it gets inserted.
 
 ### Site name lines:
 
