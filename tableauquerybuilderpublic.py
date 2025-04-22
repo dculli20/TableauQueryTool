@@ -1534,10 +1534,10 @@ class TableauApp(QWidget):
                         for field in fields:
                             # Categorize fields as Dimensions or Measures
                             if field['dataType'] in ['STRING', 'DATE', 'BOOLEAN']:
-                                self.dimensions_list.addItem(field['fieldName'])
+                                self.dimensions_list.addItem(field['fieldCaption'])
                             elif field['dataType'] in ['INTEGER', 'REAL']:
                                 for dropdown, _, _ in self.measure_rows:
-                                    dropdown.addItem(field['fieldName'])
+                                    dropdown.addItem(field['fieldCaption'])
                                     
                         self.result_area.setText(f"Fetched {len(fields)} fields successfully")
                         return  # Success, exit the retry loop
@@ -1611,11 +1611,11 @@ class TableauApp(QWidget):
         self.field_types = {}
         
         for field in metadata.get('data', []):
-            field_name = field['fieldName']
+            field_name = field['fieldCaption']
             data_type = field['dataType']
             
             fields.append({
-                'fieldName': field_name,
+                'fieldCaption': field_name,
                 'dataType': data_type
             })
             
