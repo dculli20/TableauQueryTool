@@ -91,16 +91,30 @@ class TableauApp(QWidget):
         self.reauth_timer.timeout.connect(self.sign_in)
         self.reauth_timer.start(30 * 60 * 1000)  # Re-authenticate every 30 minutes
 
+        # Set up schedule check timer
+        self.schedule_check_timer = QTimer(self)
+        self.schedule_check_timer.timeout.connect(self.refresh_schedules_after_job)
+        # Check schedules every 15 minutes
+        self.schedule_check_timer.start(15 * 60 * 1000)  # 15 minutes in milliseconds
+
         # Set up the scheduler with error handling
         try:
             from apscheduler.schedulers.background import BackgroundScheduler
             from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-            
+            from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED
+        
             jobstores = {
                 'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
             }
             self.scheduler = BackgroundScheduler(jobstores=jobstores)
             self.scheduler.start()
+            
+            # Add event listeners to the scheduler
+            self.scheduler.add_listener(
+                self.scheduler_event_listener,
+                EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED
+            )
+            
             print("Scheduler started successfully")
         except Exception as e:
             print(f"Error initializing scheduler: {e}")
@@ -537,12 +551,17 @@ class TableauApp(QWidget):
         try:
             jobs = self.scheduler.get_jobs()
             job_dict = {job.id: job for job in jobs}
+            print(f"Found {len(jobs)} active jobs in scheduler")
+            
+            # Debug: print all job IDs
+            job_ids = [job.id for job in jobs]
+            print(f"Job IDs: {job_ids}")
         except Exception as e:
             print(f"Error getting jobs from scheduler: {e}")
             job_dict = {}
         
         # Update column count and headers to include data source
-        self.schedule_list.setColumnCount(5)  # Increase to 5 columns
+        self.schedule_list.setColumnCount(5)  # 5 columns
         self.schedule_list.setHorizontalHeaderLabels(["Name", "Data Source", "Frequency", "Time", "Next Run"])
         
         # Add each schedule to the list
@@ -553,15 +572,16 @@ class TableauApp(QWidget):
             self.schedule_list.setItem(i, 0, QTableWidgetItem(schedule["name"]))
             
             # Data Source - Find the name from the LUID
-            datasource_name = "Unknown"
-            datasource_luid = schedule.get("datasource_luid", "")
-            
-            # Try to find the data source name from the all_datasources list
-            if hasattr(self, 'all_datasources'):
-                for name, luid in self.all_datasources:
-                    if luid == datasource_luid:
-                        datasource_name = name
-                        break
+            datasource_name = schedule.get("datasource_name", "Unknown")
+            if datasource_name == "Unknown":
+                datasource_luid = schedule.get("datasource_luid", "")
+                
+                # Try to find the data source name from the all_datasources list
+                if hasattr(self, 'all_datasources'):
+                    for name, luid in self.all_datasources:
+                        if luid == datasource_luid:
+                            datasource_name = name
+                            break
             
             self.schedule_list.setItem(i, 1, QTableWidgetItem(datasource_name))
             
@@ -582,11 +602,41 @@ class TableauApp(QWidget):
             
             # Next Run
             job_id = f"query_{schedule['name'].replace(' ', '_')}"
+            print(f"Checking next run for job ID: {job_id}")
+            
             if job_id in job_dict:
-                next_run = job_dict[job_id].next_run_time
-                next_run_text = next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else "Not scheduled"
+                job = job_dict[job_id]
+                next_run = job.next_run_time
+                if next_run:
+                    next_run_text = next_run.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"Schedule {schedule['name']} next run: {next_run_text}")
+                else:
+                    next_run_text = "Not scheduled"
+                    print(f"Schedule {schedule['name']} has no next run time")
+                    
+                    # Try to recreate the job if it has no next run time
+                    print(f"Recreating job {job_id} because it has no next run time")
+                    self.recreate_schedule_job(schedule)
+                    
+                    # Check if recreation was successful
+                    job = self.scheduler.get_job(job_id)
+                    if job and job.next_run_time:
+                        next_run_text = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+                        print(f"Job recreated successfully. New next run: {next_run_text}")
             else:
                 next_run_text = "Not scheduled"
+                print(f"Schedule {schedule['name']} job not found (ID: {job_id})")
+                
+                # Try to recreate the job if it's missing
+                print(f"Recreating missing job {job_id}")
+                self.recreate_schedule_job(schedule)
+                
+                # Check if recreation was successful
+                job = self.scheduler.get_job(job_id)
+                if job and job.next_run_time:
+                    next_run_text = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"Job recreated successfully. Next run: {next_run_text}")
+                
             self.schedule_list.setItem(i, 4, QTableWidgetItem(next_run_text))
         
         # Resize columns to content
@@ -596,20 +646,20 @@ class TableauApp(QWidget):
         status_text = "Scheduled Tasks:\n\n"
         for schedule in self.schedules:
             time_str = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
-            datasource_name = "Unknown"
-            datasource_luid = schedule.get("datasource_luid", "")
-            
-            # Try to find the data source name
-            if hasattr(self, 'all_datasources'):
-                for name, luid in self.all_datasources:
-                    if luid == datasource_luid:
-                        datasource_name = name
-                        break
+            datasource_name = schedule.get("datasource_name", "Unknown")
+            if datasource_name == "Unknown":
+                datasource_luid = schedule.get("datasource_luid", "")
+                
+                # Try to find the data source name
+                if hasattr(self, 'all_datasources'):
+                    for name, luid in self.all_datasources:
+                        if luid == datasource_luid:
+                            datasource_name = name
+                            break
                         
             status_text += f"• {schedule['name']} ({datasource_name}): {schedule['frequency']}, {schedule.get('detail', '')} at {time_str}\n"
         
         self.schedule_status.setText(status_text)
-
 
 
     def on_schedule_selected(self):
@@ -952,6 +1002,68 @@ class TableauApp(QWidget):
             print(f"Error loading schedules from disk: {e}")
             self.schedules = []
 
+    def refresh_schedules_after_job(self):
+        """Refresh the schedule display and ensure all jobs are properly scheduled"""
+        print("Refreshing schedules after job execution")
+        
+        # First check if any jobs are missing
+        if not hasattr(self, 'schedules') or not self.schedules:
+            print("No schedules to refresh")
+            return
+        
+        # Get all current jobs
+        try:
+            jobs = self.scheduler.get_jobs()
+            job_ids = {job.id for job in jobs}
+            print(f"Found {len(jobs)} active jobs in scheduler")
+        except Exception as e:
+            print(f"Error getting jobs from scheduler: {e}")
+            job_ids = set()
+        
+        # Check for missing jobs and recreate them
+        missing_jobs = []
+        for schedule in self.schedules:
+            job_id = f"query_{schedule['name'].replace(' ', '_')}"
+            if job_id not in job_ids:
+                missing_jobs.append(schedule)
+        
+        if missing_jobs:
+            print(f"Found {len(missing_jobs)} missing jobs, recreating them")
+            for schedule in missing_jobs:
+                self.recreate_schedule_job(schedule)
+        
+        # Update the display
+        self.update_schedule_display()
+
+    def scheduler_event_listener(self, event):
+        """Listen for scheduler events"""
+        try:
+            if hasattr(event, 'job_id'):
+                job_id = event.job_id
+                job = self.scheduler.get_job(job_id)
+                job_name = job.name if job else job_id
+                
+                if hasattr(event, 'exception') and event.exception:
+                    print(f"Job error: {job_name} - {event.exception}")
+                    import traceback
+                    traceback.print_exc()
+                elif hasattr(event, 'scheduled_run_time'):
+                    if hasattr(event, 'retval'):  # Job executed
+                        print(f"Job executed: {job_name} at {event.scheduled_run_time}")
+                        if event.retval:
+                            print(f"Job result: {event.retval}")
+                        
+                        # Refresh schedules after job execution
+                        QTimer.singleShot(2000, self.refresh_schedules_after_job)
+                    else:  # Job missed
+                        print(f"Job missed: {job_name} scheduled at {event.scheduled_run_time}")
+                        
+                        # Refresh schedules after missed job
+                        QTimer.singleShot(2000, self.refresh_schedules_after_job)
+        except Exception as e:
+            print(f"Error in scheduler event listener: {e}")
+
+
     def recreate_schedule_job(self, schedule):
         """Recreate a scheduler job from a saved schedule"""
         try:
@@ -960,8 +1072,19 @@ class TableauApp(QWidget):
             hour = schedule["hour"]
             minute = schedule["minute"]
             
+            print(f"Recreating job for schedule: {name} ({frequency} at {hour:02d}:{minute:02d})")
+            
             # Create job ID
             job_id = f"query_{name.replace(' ', '_')}"
+            
+            # Remove existing job if it exists
+            try:
+                existing_job = self.scheduler.get_job(job_id)
+                if existing_job:
+                    print(f"Removing existing job {job_id}")
+                    self.scheduler.remove_job(job_id)
+            except Exception as e:
+                print(f"Error removing existing job: {e}")
             
             # Set up the trigger based on frequency
             if frequency == "Daily":
@@ -975,11 +1098,14 @@ class TableauApp(QWidget):
                     kwargs={'schedule_dict': schedule},
                     replace_existing=True
                 )
+                print(f"Added daily job at {hour:02d}:{minute:02d}")
+                
             elif frequency == "Weekly" and "day_of_week" in schedule:
+                day_of_week = schedule["day_of_week"]
                 self.scheduler.add_job(
                     func=run_scheduled_query_standalone,
                     trigger='cron',
-                    day_of_week=schedule["day_of_week"],
+                    day_of_week=day_of_week,
                     hour=hour,
                     minute=minute,
                     id=job_id,
@@ -987,11 +1113,16 @@ class TableauApp(QWidget):
                     kwargs={'schedule_dict': schedule},
                     replace_existing=True
                 )
+                days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                day_name = days[day_of_week] if 0 <= day_of_week < len(days) else f"day {day_of_week}"
+                print(f"Added weekly job on {day_name} at {hour:02d}:{minute:02d}")
+                
             elif frequency == "Monthly" and "day_of_month" in schedule:
+                day_of_month = schedule["day_of_month"]
                 self.scheduler.add_job(
                     func=run_scheduled_query_standalone,
                     trigger='cron',
-                    day=schedule["day_of_month"],
+                    day=day_of_month,
                     hour=hour,
                     minute=minute,
                     id=job_id,
@@ -999,12 +1130,25 @@ class TableauApp(QWidget):
                     kwargs={'schedule_dict': schedule},
                     replace_existing=True
                 )
-            
-            print(f"Recreated job for schedule: {name}")
+                print(f"Added monthly job on day {day_of_month} at {hour:02d}:{minute:02d}")
+                
+            else:
+                print(f"Invalid frequency or missing parameters in schedule: {name}")
+                return
+                
+            # Verify the job was added
+            job = self.scheduler.get_job(job_id)
+            if job:
+                next_run = job.next_run_time
+                print(f"Job created successfully. Next run: {next_run}")
+            else:
+                print(f"Warning: Job was not created properly")
+                
         except Exception as e:
             print(f"Error recreating job for schedule {schedule.get('name', 'unknown')}: {e}")
             import traceback
             traceback.print_exc()
+
 
     def serialize_filter(self, filter_widget):
         """Convert a filter widget to a serializable dictionary"""
@@ -2966,7 +3110,7 @@ def main():
     
     # Splash screen code
     if not hasattr(sys, '_MEIPASS'):  # Not running from PyInstaller
-        splash_image_path = "C:/Users/DarenCullimore/Pictures/TableauQueryMeme.jpg" #Replace with your file path
+        splash_image_path = "C:/Users/DarenCullimore/Pictures/TableauQueryMeme.jpg"
     else:
         splash_image_path = resource_path("TableauQueryMeme.jpg")
     
@@ -3019,3 +3163,9 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# if __name__ == '__main__':
+#     app = QApplication(sys.argv)
+#     ex = TableauApp()
+#     ex.show()
+#     sys.exit(app.exec_())
