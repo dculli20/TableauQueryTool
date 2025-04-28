@@ -34,7 +34,7 @@ class QueryWorker(QThread):
                 'X-Tableau-Auth': self.auth_token,
                 'Content-Type': 'application/json'
             }
-            url = f'https://{enter_your_cluster}.online.online.tableau.com/api/v1/vizql-data-service/query-datasource'
+            url = f'https://{your_site_cluster}.online.tableau.com/api/v1/vizql-data-service/query-datasource'
             
             payload = {
                 "datasource": {
@@ -513,7 +513,7 @@ class TableauApp(QWidget):
                 'X-Tableau-Auth': self.auth_token,
                 'Content-Type': 'application/json'
             }
-            url = f'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/query-datasource'
+            url = f'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/query-datasource'
             
             payload = {
                 "datasource": {
@@ -552,16 +552,12 @@ class TableauApp(QWidget):
             jobs = self.scheduler.get_jobs()
             job_dict = {job.id: job for job in jobs}
             print(f"Found {len(jobs)} active jobs in scheduler")
-            
-            # Debug: print all job IDs
-            job_ids = [job.id for job in jobs]
-            print(f"Job IDs: {job_ids}")
         except Exception as e:
             print(f"Error getting jobs from scheduler: {e}")
             job_dict = {}
         
-        # Update column count and headers to include data source
-        self.schedule_list.setColumnCount(5)  # 5 columns
+        # Update column count and headers
+        self.schedule_list.setColumnCount(5)
         self.schedule_list.setHorizontalHeaderLabels(["Name", "Data Source", "Frequency", "Time", "Next Run"])
         
         # Add each schedule to the list
@@ -571,17 +567,14 @@ class TableauApp(QWidget):
             # Name
             self.schedule_list.setItem(i, 0, QTableWidgetItem(schedule["name"]))
             
-            # Data Source - Find the name from the LUID
+            # Data Source
             datasource_name = schedule.get("datasource_name", "Unknown")
-            if datasource_name == "Unknown":
+            if datasource_name == "Unknown" and hasattr(self, 'all_datasources'):
                 datasource_luid = schedule.get("datasource_luid", "")
-                
-                # Try to find the data source name from the all_datasources list
-                if hasattr(self, 'all_datasources'):
-                    for name, luid in self.all_datasources:
-                        if luid == datasource_luid:
-                            datasource_name = name
-                            break
+                for name, luid in self.all_datasources:
+                    if luid == datasource_luid:
+                        datasource_name = name
+                        break
             
             self.schedule_list.setItem(i, 1, QTableWidgetItem(datasource_name))
             
@@ -602,62 +595,62 @@ class TableauApp(QWidget):
             
             # Next Run
             job_id = f"query_{schedule['name'].replace(' ', '_')}"
-            print(f"Checking next run for job ID: {job_id}")
             
             if job_id in job_dict:
                 job = job_dict[job_id]
                 next_run = job.next_run_time
                 if next_run:
                     next_run_text = next_run.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"Schedule {schedule['name']} next run: {next_run_text}")
                 else:
-                    next_run_text = "Not scheduled"
-                    print(f"Schedule {schedule['name']} has no next run time")
-                    
-                    # Try to recreate the job if it has no next run time
-                    print(f"Recreating job {job_id} because it has no next run time")
+                    # If job exists but has no next run time, recreate it
+                    print(f"Job {job_id} exists but has no next run time. Recreating...")
                     self.recreate_schedule_job(schedule)
                     
                     # Check if recreation was successful
                     job = self.scheduler.get_job(job_id)
                     if job and job.next_run_time:
                         next_run_text = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
-                        print(f"Job recreated successfully. New next run: {next_run_text}")
+                    else:
+                        next_run_text = "Not scheduled"
             else:
-                next_run_text = "Not scheduled"
-                print(f"Schedule {schedule['name']} job not found (ID: {job_id})")
-                
-                # Try to recreate the job if it's missing
-                print(f"Recreating missing job {job_id}")
+                # Job not found, recreate it
+                print(f"Job {job_id} not found. Recreating...")
                 self.recreate_schedule_job(schedule)
                 
                 # Check if recreation was successful
                 job = self.scheduler.get_job(job_id)
                 if job and job.next_run_time:
                     next_run_text = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"Job recreated successfully. Next run: {next_run_text}")
-                
+                else:
+                    next_run_text = "Not scheduled"
+            
             self.schedule_list.setItem(i, 4, QTableWidgetItem(next_run_text))
         
         # Resize columns to content
         self.schedule_list.resizeColumnsToContents()
         
-        # Also update the text status area
+        # Update the text status area
+        self.update_schedule_status_text()
+    
+    def update_schedule_status_text(self):
+        """Update the text in the status area with current schedule information"""
+        if not hasattr(self, 'schedules') or not self.schedules:
+            self.schedule_status.setText("No scheduled tasks")
+            return
+            
         status_text = "Scheduled Tasks:\n\n"
         for schedule in self.schedules:
             time_str = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
             datasource_name = schedule.get("datasource_name", "Unknown")
-            if datasource_name == "Unknown":
-                datasource_luid = schedule.get("datasource_luid", "")
-                
-                # Try to find the data source name
-                if hasattr(self, 'all_datasources'):
-                    for name, luid in self.all_datasources:
-                        if luid == datasource_luid:
-                            datasource_name = name
-                            break
-                        
+            
+            # Get next run time
+            job_id = f"query_{schedule['name'].replace(' ', '_')}"
+            job = self.scheduler.get_job(job_id)
+            next_run = job.next_run_time if job else None
+            next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else "Not scheduled"
+            
             status_text += f"• {schedule['name']} ({datasource_name}): {schedule['frequency']}, {schedule.get('detail', '')} at {time_str}\n"
+            status_text += f"  Next run: {next_run_str}\n\n"
         
         self.schedule_status.setText(status_text)
 
@@ -990,11 +983,15 @@ class TableauApp(QWidget):
                 print(f"Loaded {len(self.schedules)} schedules from disk")
                 
                 # Re-create scheduler jobs for each schedule
+                recreated_count = 0
                 for schedule in self.schedules:
-                    self.recreate_schedule_job(schedule)
+                    if self.recreate_schedule_job(schedule):
+                        recreated_count += 1
+                        
+                print(f"Successfully recreated {recreated_count} of {len(self.schedules)} jobs")
                     
                 # Update the display
-                self.update_schedule_display()
+                QTimer.singleShot(1000, self.update_schedule_display)
             else:
                 self.schedules = []
                 print("No saved schedules found")
@@ -1053,16 +1050,15 @@ class TableauApp(QWidget):
                         if event.retval:
                             print(f"Job result: {event.retval}")
                         
-                        # Refresh schedules after job execution
-                        QTimer.singleShot(2000, self.refresh_schedules_after_job)
+                        # Immediately update the schedule display after job execution
+                        QTimer.singleShot(500, self.update_schedule_display)
                     else:  # Job missed
                         print(f"Job missed: {job_name} scheduled at {event.scheduled_run_time}")
                         
-                        # Refresh schedules after missed job
-                        QTimer.singleShot(2000, self.refresh_schedules_after_job)
+                        # Update display after missed job
+                        QTimer.singleShot(500, self.update_schedule_display)
         except Exception as e:
             print(f"Error in scheduler event listener: {e}")
-
 
     def recreate_schedule_job(self, schedule):
         """Recreate a scheduler job from a saved schedule"""
@@ -1096,10 +1092,9 @@ class TableauApp(QWidget):
                     id=job_id,
                     name=name,
                     kwargs={'schedule_dict': schedule},
-                    replace_existing=True
+                    replace_existing=True,
+                    misfire_grace_time=3600  # Allow misfires up to 1 hour
                 )
-                print(f"Added daily job at {hour:02d}:{minute:02d}")
-                
             elif frequency == "Weekly" and "day_of_week" in schedule:
                 day_of_week = schedule["day_of_week"]
                 self.scheduler.add_job(
@@ -1111,12 +1106,9 @@ class TableauApp(QWidget):
                     id=job_id,
                     name=name,
                     kwargs={'schedule_dict': schedule},
-                    replace_existing=True
+                    replace_existing=True,
+                    misfire_grace_time=3600
                 )
-                days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-                day_name = days[day_of_week] if 0 <= day_of_week < len(days) else f"day {day_of_week}"
-                print(f"Added weekly job on {day_name} at {hour:02d}:{minute:02d}")
-                
             elif frequency == "Monthly" and "day_of_month" in schedule:
                 day_of_month = schedule["day_of_month"]
                 self.scheduler.add_job(
@@ -1128,27 +1120,25 @@ class TableauApp(QWidget):
                     id=job_id,
                     name=name,
                     kwargs={'schedule_dict': schedule},
-                    replace_existing=True
+                    replace_existing=True,
+                    misfire_grace_time=3600
                 )
-                print(f"Added monthly job on day {day_of_month} at {hour:02d}:{minute:02d}")
-                
-            else:
-                print(f"Invalid frequency or missing parameters in schedule: {name}")
-                return
-                
+            
             # Verify the job was added
             job = self.scheduler.get_job(job_id)
             if job:
                 next_run = job.next_run_time
                 print(f"Job created successfully. Next run: {next_run}")
+                return True
             else:
                 print(f"Warning: Job was not created properly")
+                return False
                 
         except Exception as e:
             print(f"Error recreating job for schedule {schedule.get('name', 'unknown')}: {e}")
             import traceback
             traceback.print_exc()
-
+            return False
 
     def serialize_filter(self, filter_widget):
         """Convert a filter widget to a serializable dictionary"""
@@ -1248,7 +1238,7 @@ class TableauApp(QWidget):
                 'X-Tableau-Auth': self.auth_token,
                 'Content-Type': 'application/json'
             }
-            url = f'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/query-datasource'
+            url = f'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/query-datasource'
             
             payload = {
                 "datasource": {
@@ -1316,13 +1306,13 @@ class TableauApp(QWidget):
             return error_msg
 
     def sign_in(self):
-        url = 'https://{enter_your_cluster}.online.tableau.com/api/3.25/auth/signin'
+        url = 'https://{your_site_cluster}.tableau.com/api/3.25/auth/signin'
         payload = {
             "credentials": {
-                "personalAccessTokenName": "{enter_your_token_name}",
-                "personalAccessTokenSecret": "{enter_your_token_secret}",
+                "personalAccessTokenName": "{your_token_name}",
+                "personalAccessTokenSecret": "{your_token_secret}",
                 "site": {
-                    "contentUrl": "{enter_your_site_name}"
+                    "contentUrl": "{your_site_name}"
                 }
             }
         }
@@ -1373,7 +1363,7 @@ class TableauApp(QWidget):
         page_size = 100  # Default page size in Tableau API
         
         while True:
-            url = f'https://{enter_your_cluster}.online.tableau.com/api/3.25/sites/{self.site_id}/datasources?pageSize={page_size}&pageNumber={page_num}'
+            url = f'https://{your_site_cluster}.tableau.com/api/3.25/sites/{self.site_id}/datasources?pageSize={page_size}&pageNumber={page_num}'
             
             print(f"Fetching datasources page {page_num} from: {url}")
             response = requests.get(url, headers=headers)
@@ -1422,7 +1412,7 @@ class TableauApp(QWidget):
             'Content-Type': 'application/json'
         }
         # Try using the VizQL Data Service API instead
-        url = 'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/list-datasources'
+        url = 'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/list-datasources'
         
         print(f"Trying alternative datasource fetch from: {url}")
         response = requests.post(url, headers=headers, json={})
@@ -1655,7 +1645,7 @@ class TableauApp(QWidget):
                     'X-Tableau-Auth': self.auth_token,
                     'Content-Type': 'application/json'
                 }
-                url = f'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/read-metadata'
+                url = f'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/read-metadata'
                 payload = {
                     "datasource": {
                         "datasourceLuid": datasource_luid
@@ -2276,7 +2266,7 @@ class TableauApp(QWidget):
                 self.query_button.setEnabled(False)
             
             # Define URL and headers
-            url = 'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/query-datasource'
+            url = 'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/query-datasource'
             headers = {
                 'X-Tableau-Auth': self.auth_token,
                 'Content-Type': 'application/json'
@@ -2577,7 +2567,7 @@ class StringFilterWidget(FilterWidget):
             'X-Tableau-Auth': auth_token,
             'Content-Type': 'application/json'
         }
-        url = f'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/query-datasource'
+        url = f'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/query-datasource'
         
         # Create a query that just returns distinct values for this field
         payload = {
@@ -2996,7 +2986,7 @@ def run_scheduled_query_standalone(schedule_dict):
             'X-Tableau-Auth': auth_token,
             'Content-Type': 'application/json'
         }
-        url = f'https://{enter_your_cluster}.online.tableau.com/api/v1/vizql-data-service/query-datasource'
+        url = f'https://{your_site_cluster}.tableau.com/api/v1/vizql-data-service/query-datasource'
         
         # Construct the query payload
         fields = [{"fieldCaption": field} for field in schedule_dict["dimensions"]]
@@ -3071,13 +3061,13 @@ def run_scheduled_query_standalone(schedule_dict):
 
 def get_auth_token():
     """Get a Tableau auth token"""
-    url = 'https://{enter_your_cluster}.online.tableau.com/api/3.25/auth/signin'
+    url = 'https://{your_site_cluster}.tableau.com/api/3.25/auth/signin'
     payload = {
         "credentials": {
-            "personalAccessTokenName": "{enter_your_token_name}",
-            "personalAccessTokenSecret": "{enter_your_token_secret}",
+            "personalAccessTokenName": "{your_token_name}",
+            "personalAccessTokenSecret": "{your_token_secret}",
             "site": {
-                "contentUrl": "{enter_your_site_name}"
+                "contentUrl": "{your_site_name}"
             }
         }
     }
